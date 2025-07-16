@@ -135,35 +135,85 @@ async def pine_entry(req: Request):
             if data.get("orderStrategyTypeId"):
                 tp_payload["orderStrategyTypeId"] = data["orderStrategyTypeId"]
             
+            # Only add signalPrice if we have a price and need it for relative calculations
+            # Check if we'll need signalPrice for relative stop loss calculations
+            needs_signal_price = False
+            if data.get("stopLoss", {}).get("amount") or data.get("stopLoss", {}).get("percent"):
+                needs_signal_price = True
+            
+            if price and needs_signal_price:
+                tp_payload["signalPrice"] = float(price)
+                dbg(f"🛎️ Added signalPrice: {price} (needed for relative calculations)")
+            elif price:
+                dbg(f"🛎️ Price available ({price}) but not needed for absolute stop loss")
+            else:
+                dbg("🛎️ No price available - using absolute stop loss values")
+            
             # Add price for limit orders
             if order_type == "limit":
                 if not price:
                     raise ValueError("Missing price - required for limit orders")
-                tp_payload["price"] = price
+                tp_payload["limitPrice"] = float(price)
             
-            # Get trailing stop parameters
-            initial_amt = (data.get("stopLoss", {}).get("amount") or 
-                          data.get("stopLoss", {}).get("stopPrice"))
-            trail_amt = (data.get("trailAmount") or 
-                        data.get("extras", {}).get("autoTrail", {}).get("stopLoss"))
-            trigger_dist = (data.get("triggerDistance") or 
-                           data.get("extras", {}).get("autoTrail", {}).get("trigger"))
+            # Handle stop loss configuration
+            stop_loss_config = data.get("stopLoss", {})
+            extras_config = data.get("extras", {}).get("autoTrail", {})
             
-            # Add trailing stop if all parameters are present
-            if initial_amt and trail_amt and trigger_dist:
-                # Convert to float to ensure proper JSON serialization
+            # Check if we have trailing stop configuration
+            trail_amt = extras_config.get("stopLoss")  # This is the trail amount (40)
+            trigger_dist = extras_config.get("trigger")  # This is the trigger distance (60)
+            
+            if trail_amt and trigger_dist:
+                # This is a trailing stop configuration
+                dbg(f"🛎️ Configuring trailing stop: trail_amt={trail_amt}, trigger_dist={trigger_dist}")
+                
+                # For trailing stops, we use the relative trail amount, not the absolute stopPrice
                 tp_payload.update({
                     "stopLoss": {
-                        "type": "stop",
-                        "amount": float(initial_amt)
-                    },
-                    "trailingStop": True,
-                    "trailAmount": float(trail_amt),
-                    "triggerDistance": float(trigger_dist)
+                        "type": "trailing_stop",
+                        "trailAmount": float(trail_amt)
+                    }
                 })
-                dbg(f"🛎️ Added trailing stop: initial_amt={initial_amt}, trail_amt={trail_amt}, trigger_dist={trigger_dist}")
+                
+                # Add trigger distance if supported (this might be custom logic)
+                if trigger_dist:
+                    tp_payload["triggerDistance"] = float(trigger_dist)
+                
+                dbg(f"🛎️ Added trailing stop: type=trailing_stop, trailAmount={trail_amt}, triggerDistance={trigger_dist}")
+                
+            elif stop_loss_config:
+                # This is a regular stop loss
+                stop_price = stop_loss_config.get("stopPrice")
+                stop_amount = stop_loss_config.get("amount")
+                stop_percent = stop_loss_config.get("percent")
+                stop_type = stop_loss_config.get("type", "stop")
+                
+                if stop_price:
+                    # Absolute stop price
+                    tp_payload["stopLoss"] = {
+                        "type": stop_type,
+                        "stopPrice": float(stop_price)
+                    }
+                    dbg(f"🛎️ Added absolute stop loss: stopPrice={stop_price}")
+                    
+                elif stop_amount:
+                    # Relative stop amount (requires signalPrice)
+                    tp_payload["stopLoss"] = {
+                        "type": stop_type,
+                        "amount": float(stop_amount)
+                    }
+                    dbg(f"🛎️ Added relative stop loss: amount={stop_amount}")
+                    
+                elif stop_percent:
+                    # Relative stop percent (requires signalPrice)
+                    tp_payload["stopLoss"] = {
+                        "type": stop_type,
+                        "percent": float(stop_percent)
+                    }
+                    dbg(f"🛎️ Added relative stop loss: percent={stop_percent}")
+                    
             else:
-                dbg(f"🛎️ Missing trailing stop parameters - initial_amt={initial_amt}, trail_amt={trail_amt}, trigger_dist={trigger_dist}")
+                dbg("🛎️ No stop loss configuration found")
             
             dbg(f"→ Final TradersPost payload: {json.dumps(tp_payload, indent=2)}")
             await send_alt_ws(tp_payload)
@@ -171,7 +221,9 @@ async def pine_entry(req: Request):
             return {
                 "status": "alt_http_sent",
                 "order_type": order_type,
-                "has_trailing": "trailingStop" in tp_payload,
+                "has_stop_loss": "stopLoss" in tp_payload,
+                "stop_loss_type": tp_payload.get("stopLoss", {}).get("type"),
+                "has_signal_price": "signalPrice" in tp_payload,
                 "tp_payload": tp_payload
             }
             
@@ -203,8 +255,8 @@ async def pine_entry(req: Request):
                 data.get("close") or 
                 data.get("params", {}).get("entryVersion", {}).get("price"))
         if price:
-            exit_payload["price"] = price
-            dbg(f"🛎️ Added price {price} to exit signal")
+            exit_payload["signalPrice"] = float(price)
+            dbg(f"🛎️ Added signalPrice {price} to exit signal")
         
         dbg(f"→ Exit payload: {json.dumps(exit_payload, indent=2)}")
         await send_alt_ws(exit_payload)

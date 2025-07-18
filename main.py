@@ -212,12 +212,16 @@ class PolygonPriceMonitor:
             auth_message = {"action": "auth", "params": self.api_key}
             await self.ws.send(json.dumps(auth_message))
 
-            # Wait for auth response
-            response = await self.ws.recv()
-            auth_list = json.loads(response)
+            # Wait for auth response — might receive multiple messages
+            auth_success = False
+            for _ in range(5):  # try up to 5 responses
+                response = await self.ws.recv()
+                messages = json.loads(response)
 
-            if isinstance(auth_list, list):
-                for msg in auth_list:
+                if not isinstance(messages, list):
+                    messages = [messages]
+
+                for msg in messages:
                     if msg.get("ev") == "status" and msg.get("status") == "auth_success":
                         dbg("✅ Polygon.io authentication successful")
                         self.is_connected = True
@@ -228,12 +232,12 @@ class PolygonPriceMonitor:
 
                         asyncio.create_task(self._listen_for_messages())
                         return
+                    elif msg.get("ev") == "status" and msg.get("status") == "connected":
+                        dbg("ℹ️ Polygon.io says: connected — waiting for auth_success...")
 
-                dbg(f"❌ Polygon.io auth failed: {auth_list}")
-                self.is_connected = False
-            else:
-                dbg(f"❌ Unexpected Polygon auth response: {auth_list}")
-                self.is_connected = False
+            # If we get here, auth_success never arrived
+            dbg(f"❌ Polygon.io auth failed or not received in time")
+            self.is_connected = False
 
         except Exception as e:
             dbg(f"❌ Polygon.io connection error: {e}")

@@ -2,3 +2,5 @@ fastapi
 uvicorn
 httpx
 websockets
+redis
+python-multipart

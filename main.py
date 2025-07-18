@@ -211,14 +211,14 @@ class PolygonPriceMonitor:
             # Authenticate
             auth_message = {"action": "auth", "params": self.api_key}
             await self.ws.send(json.dumps(auth_message))
-            
+
             # Wait for auth response
             response = await self.ws.recv()
             auth_list = json.loads(response)
 
             if isinstance(auth_list, list):
                 for msg in auth_list:
-                    if msg.get("status") == "auth_success":
+                    if msg.get("ev") == "status" and msg.get("status") == "auth_success":
                         dbg("✅ Polygon.io authentication successful")
                         self.is_connected = True
                         self.reconnect_attempts = 0

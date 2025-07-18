@@ -202,7 +202,7 @@ class PolygonPriceMonitor:
     async def connect(self):
         """Connect to Polygon.io WebSocket"""
         try:
-            uri = f"wss://socket.polygon.io/stocks"
+            uri = f"wss://socket.polygon.io/forex"
             ssl_context = ssl.create_default_context()
             
             dbg("🔌 Connecting to Polygon.io WebSocket...")
@@ -214,23 +214,27 @@ class PolygonPriceMonitor:
             
             # Wait for auth response
             response = await self.ws.recv()
-            auth_data = json.loads(response)
-            
-            if auth_data.get("status") == "auth_success":
-                dbg("✅ Polygon.io authentication successful")
-                self.is_connected = True
-                self.reconnect_attempts = 0
-                
-                # Subscribe to existing symbols
-                if self.monitored_symbols:
-                    await self._subscribe_to_symbols()
-                
-                # Start listening for messages
-                asyncio.create_task(self._listen_for_messages())
-            else:
-                dbg(f"❌ Polygon.io authentication failed: {auth_data}")
+            auth_list = json.loads(response)
+
+            if isinstance(auth_list, list):
+                for msg in auth_list:
+                    if msg.get("status") == "auth_success":
+                        dbg("✅ Polygon.io authentication successful")
+                        self.is_connected = True
+                        self.reconnect_attempts = 0
+
+                        if self.monitored_symbols:
+                            await self._subscribe_to_symbols()
+
+                        asyncio.create_task(self._listen_for_messages())
+                        return
+
+                dbg(f"❌ Polygon.io auth failed: {auth_list}")
                 self.is_connected = False
-                
+            else:
+                dbg(f"❌ Unexpected Polygon auth response: {auth_list}")
+                self.is_connected = False
+
         except Exception as e:
             dbg(f"❌ Polygon.io connection error: {e}")
             self.is_connected = False

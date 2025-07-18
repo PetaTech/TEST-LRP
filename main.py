@@ -202,7 +202,7 @@ class PolygonPriceMonitor:
     async def connect(self):
         """Connect to Polygon.io WebSocket"""
         try:
-            uri = f"wss://socket.polygon.io/forex"
+            uri = f"wss://socket.polygon.io/futures"
             ssl_context = ssl.create_default_context()
             
             dbg("🔌 Connecting to Polygon.io WebSocket...")
@@ -212,32 +212,47 @@ class PolygonPriceMonitor:
             auth_message = {"action": "auth", "params": self.api_key}
             await self.ws.send(json.dumps(auth_message))
 
-            # Wait for auth response — might receive multiple messages
-            auth_success = False
-            for _ in range(5):  # try up to 5 responses
+            # Wait for connection confirmation and auth response
+            auth_confirmed = False
+            while not auth_confirmed:
                 response = await self.ws.recv()
-                messages = json.loads(response)
+                auth_data = json.loads(response)
+                
+                if isinstance(auth_data, list):
+                    for msg in auth_data:
+                        if msg.get("ev") == "status":
+                            if msg.get("status") == "connected":
+                                dbg("🔌 Polygon.io WebSocket connected, waiting for auth...")
+                                continue
+                            elif msg.get("status") == "auth_success":
+                                dbg("✅ Polygon.io authentication successful")
+                                self.is_connected = True
+                                self.reconnect_attempts = 0
+                                auth_confirmed = True
+                                break
+                            elif msg.get("status") == "auth_timeout" or "auth" in msg.get("status", ""):
+                                dbg(f"❌ Polygon.io authentication failed: {msg}")
+                                self.is_connected = False
+                                return
+                else:
+                    if auth_data.get("ev") == "status":
+                        if auth_data.get("status") == "connected":
+                            dbg("🔌 Polygon.io WebSocket connected, waiting for auth...")
+                            continue
+                        elif auth_data.get("status") == "auth_success":
+                            dbg("✅ Polygon.io authentication successful")
+                            self.is_connected = True
+                            self.reconnect_attempts = 0
+                            auth_confirmed = True
+                        elif auth_data.get("status") == "auth_timeout" or "auth" in auth_data.get("status", ""):
+                            dbg(f"❌ Polygon.io authentication failed: {auth_data}")
+                            self.is_connected = False
+                            return
 
-                if not isinstance(messages, list):
-                    messages = [messages]
-
-                for msg in messages:
-                    if msg.get("ev") == "status" and msg.get("status") == "auth_success":
-                        dbg("✅ Polygon.io authentication successful")
-                        self.is_connected = True
-                        self.reconnect_attempts = 0
-
-                        if self.monitored_symbols:
-                            await self._subscribe_to_symbols()
-
-                        asyncio.create_task(self._listen_for_messages())
-                        return
-                    elif msg.get("ev") == "status" and msg.get("status") == "connected":
-                        dbg("ℹ️ Polygon.io says: connected — waiting for auth_success...")
-
-            # If we get here, auth_success never arrived
-            dbg(f"❌ Polygon.io auth failed or not received in time")
-            self.is_connected = False
+            if self.is_connected:
+                if self.monitored_symbols:
+                    await self._subscribe_to_symbols()
+                asyncio.create_task(self._listen_for_messages())
 
         except Exception as e:
             dbg(f"❌ Polygon.io connection error: {e}")
